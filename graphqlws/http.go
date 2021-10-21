@@ -17,6 +17,7 @@ const ProtocolGraphQLWS = "graphql-ws"
 var defaultUpgrader = websocket.Upgrader{
 	CheckOrigin:  func(r *http.Request) bool { return true },
 	Subprotocols: []string{ProtocolGraphQLWS},
+	EnableCompression: true,
 }
 
 type handler struct {
