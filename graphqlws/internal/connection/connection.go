@@ -56,10 +56,11 @@ type GraphQLService interface {
 }
 
 type connection struct {
-	cancel       func()
-	service      GraphQLService
-	writeTimeout time.Duration
-	ws           wsConnection
+	cancel            func()
+	service           GraphQLService
+	writeTimeout      time.Duration
+	keepAliveInterval time.Duration
+	ws                wsConnection
 }
 
 type operationMap struct {
@@ -107,6 +108,13 @@ func WriteTimeout(d time.Duration) func(conn *connection) {
 	}
 }
 
+// KeepAliveInterval sets the interval of sending keep-alive messages
+func KeepAliveInterval(d time.Duration) func(conn *connection) {
+	return func(conn *connection) {
+		conn.keepAliveInterval = d
+	}
+}
+
 // Connect implements the apollographql subscriptions-transport-ws protocol@v0.9.4
 // https://github.com/apollographql/subscriptions-transport-ws/blob/v0.9.4/PROTOCOL.md
 func Connect(ctx context.Context, ws wsConnection, service GraphQLService, options ...func(conn *connection)) func() {
@@ -118,6 +126,7 @@ func Connect(ctx context.Context, ws wsConnection, service GraphQLService, optio
 	defaultOpts := []func(conn *connection){
 		ReadLimit(4096),
 		WriteTimeout(time.Second),
+		KeepAliveInterval(10 * time.Second),
 	}
 
 	for _, opt := range append(defaultOpts, options...) {
@@ -144,6 +153,13 @@ func (conn *connection) writeLoop(ctx context.Context) sendFunc {
 	}
 
 	go func() {
+		ticker := time.NewTicker(conn.keepAliveInterval)
+
+		defer func() {
+			ticker.Stop()
+		}()
+
+
 		defer close(stop)
 		defer conn.close()
 
@@ -151,6 +167,20 @@ func (conn *connection) writeLoop(ctx context.Context) sendFunc {
 			select {
 			case <-ctx.Done():
 				return
+			case <-ticker.C:
+				keepAlive := operationMessage{
+					ID:      "",
+					Payload: nil,
+					Type:    typeConnectionKeepAlive,
+				}
+
+				if err := conn.ws.SetWriteDeadline(time.Now().Add(conn.writeTimeout)); err != nil {
+					return
+				}
+
+				if err := conn.ws.WriteJSON(keepAlive); err != nil {
+					return
+				}
 			case msg := <-out:
 				select {
 				case <-ctx.Done():
