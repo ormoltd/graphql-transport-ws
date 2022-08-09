@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/gorilla/websocket"
 
@@ -55,6 +56,7 @@ type Option interface {
 
 type options struct {
 	contextGenerators []ContextGenerator
+	connectOptions    []connection.Option
 }
 
 type optionFunc func(*options)
@@ -68,6 +70,22 @@ func (f optionFunc) apply(o *options) {
 func WithContextGenerator(f ContextGenerator) Option {
 	return optionFunc(func(o *options) {
 		o.contextGenerators = append(o.contextGenerators, f)
+	})
+}
+
+// WithReadLimit limits the maximum size of incoming messages
+func WithReadLimit(limit int64) Option {
+	return optionFunc(func(o *options) {
+		connOpt := connection.ReadLimit(limit)
+		o.connectOptions = append(o.connectOptions, connOpt)
+	})
+}
+
+// WithWriteTimeout sets a timeout for outgoing messages
+func WithWriteTimeout(d time.Duration) Option {
+	return optionFunc(func(o *options) {
+		connOpt := connection.WriteTimeout(d)
+		o.connectOptions = append(o.connectOptions, connOpt)
 	})
 }
 
@@ -98,6 +116,11 @@ func (h *handler) NewHandlerFunc(svc connection.GraphQLService, httpHandler http
 			}
 
 			ctx, err := buildContext(r, o.contextGenerators)
+			if err != nil {
+				w.Header().Set("X-WebSocket-Upgrade-Failure", err.Error())
+				return
+			}
+
 			ws, err := h.Upgrader.Upgrade(w, r, nil)
 			if err != nil {
 				w.Header().Set("X-WebSocket-Upgrade-Failure", err.Error())
@@ -111,7 +134,7 @@ func (h *handler) NewHandlerFunc(svc connection.GraphQLService, httpHandler http
 				return
 			}
 
-			go connection.Connect(ctx, ws, svc)
+			go connection.Connect(ctx, ws, svc, o.connectOptions...)
 			return
 		}
 
